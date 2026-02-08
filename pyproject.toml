@@ -37,6 +37,8 @@ dependencies = [
     "transformers==4.53.2",
     "rich>=14.0.0",
     "polars>=1.30.0",
+    "stable-baselines3>=2.7.1",
+    "tensorboard>=2.15.2",
 ]
 
 
