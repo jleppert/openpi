@@ -1,0 +1,7 @@
+mujoco>=3.0.0
+imageio
+imageio-ffmpeg
+numpy
+pillow
+typing-extensions
+tyro
