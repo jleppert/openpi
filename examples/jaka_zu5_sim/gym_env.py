@@ -89,6 +89,8 @@ class JakaZu5PickCubeEnv(gymnasium.Env):
 
         self._step_count = 0
         self._hold_count = 0
+        self._first_grasp_given = False
+        self._max_lift_rewarded = 0.0
         self._rng = np.random.default_rng()
 
     def reset(self, *, seed=None, options=None):
@@ -129,6 +131,8 @@ class JakaZu5PickCubeEnv(gymnasium.Env):
 
         self._step_count = 0
         self._hold_count = 0
+        self._first_grasp_given = False
+        self._max_lift_rewarded = 0.0
 
         return self._get_obs(), {}
 
@@ -201,24 +205,24 @@ class JakaZu5PickCubeEnv(gymnasium.Env):
         # Check finger-cube contacts.
         has_grasp = self._check_grasp()
 
-        # 1. Reach reward: negative distance.
+        # 1. Reach reward: negative distance (per-step, guides approach).
         r_reach = -2.0 * dist
 
-        # 2. Grasp reward.
-        r_grasp = 2.0 if has_grasp else 0.0
+        # 2. Grasp bonus: one-time reward for first grasp (not per-step).
+        r_grasp = 0.0
+        if has_grasp and not self._first_grasp_given:
+            r_grasp = 10.0
+            self._first_grasp_given = True
 
-        # 3. Lift reward (only if grasped) — strong signal to lift high.
+        # 3. Lift bonus: reward for reaching new max height (one-time per height).
+        # Only fires when the cube reaches a new record height while grasped.
         lift_height = max(0.0, cube_z - _TABLE_Z)
-        r_lift = 15.0 * lift_height if has_grasp else 0.0
+        r_lift = 0.0
+        if has_grasp and lift_height > self._max_lift_rewarded:
+            r_lift = 50.0 * (lift_height - self._max_lift_rewarded)
+            self._max_lift_rewarded = lift_height
 
-        # 4. Height bonus: extra reward for reaching near/above threshold.
-        r_height_bonus = 0.0
-        if has_grasp and cube_z >= _LIFT_THRESHOLD - 0.03:
-            r_height_bonus = 3.0
-        if has_grasp and cube_z >= _LIFT_THRESHOLD:
-            r_height_bonus = 5.0
-
-        # 5. Success check.
+        # 4. Success check.
         terminated = False
         success = False
         if cube_z >= _LIFT_THRESHOLD and has_grasp:
@@ -229,15 +233,18 @@ class JakaZu5PickCubeEnv(gymnasium.Env):
         else:
             self._hold_count = 0
 
-        r_success = 20.0 if success else 0.0
+        r_success = 100.0 if success else 0.0
+
+        # 5. Time penalty: small cost per step to encourage finishing fast.
+        r_time = -0.1
 
         # 6. Penalty if cube falls off table.
         r_penalty = 0.0
         if cube_z < _TABLE_Z - 0.05:
-            r_penalty = -5.0
+            r_penalty = -10.0
             terminated = True
 
-        reward = r_reach + r_grasp + r_lift + r_height_bonus + r_success + r_penalty
+        reward = r_reach + r_grasp + r_lift + r_success + r_time + r_penalty
 
         info = {
             "dist": dist,
