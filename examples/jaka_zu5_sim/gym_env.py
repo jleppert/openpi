@@ -17,9 +17,9 @@ _GRIPPER_ACTUATOR_NAME = "act_gripper"
 _GRIPPER_MAX_OPEN = 0.04
 
 # Top-down approach: only J1-J3 are controlled by the RL agent.
-# J4-J6 are locked to keep the gripper pointing downward.
+# J4 and J6 are locked at 0. J5 is computed as -(J2+J3) each step so the
+# gripper always points straight down regardless of shoulder/elbow angles.
 _CONTROLLED_JOINTS = [0, 1, 2]  # indices into the 6 arm joints
-_WRIST_HOME = [0.0, 0.5, 0.0]  # fixed values for J4, J5, J6
 
 # Physics.
 _PHYSICS_STEPS_PER_CONTROL = 33  # ~15 Hz control at 0.002s timestep
@@ -29,12 +29,12 @@ _MAX_EPISODE_STEPS = 200
 _TABLE_Z = 0.37
 
 # Cube randomization bounds (x, y on table surface).
-_CUBE_X_RANGE = (0.35, 0.55)
+_CUBE_X_RANGE = (0.50, 0.70)
 _CUBE_Y_RANGE = (-0.10, 0.10)
 
 # Lift success threshold (10cm above table).
 _LIFT_THRESHOLD = _TABLE_Z + 0.10
-_HOLD_STEPS_REQUIRED = 15  # ~1 second at 15 Hz
+_HOLD_STEPS_REQUIRED = 8  # ~0.5 second at 15 Hz
 
 
 class JakaZu5PickCubeEnv(gymnasium.Env):
@@ -77,8 +77,6 @@ class JakaZu5PickCubeEnv(gymnasium.Env):
         self._right_finger_geom = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_GEOM, "right_finger_geom")
         self._cube_geom = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_GEOM, "red_cube_geom")
 
-        # Move green cylinder out of the way (below the floor).
-        self._green_joint_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_JOINT, "green_cylinder_joint")
 
         # Spaces.
         self.observation_space = gymnasium.spaces.Box(
@@ -108,18 +106,26 @@ class JakaZu5PickCubeEnv(gymnasium.Env):
         self._data.qpos[cube_qpos_adr:cube_qpos_adr + 3] = [cube_x, cube_y, cube_z]
         self._data.qpos[cube_qpos_adr + 3:cube_qpos_adr + 7] = [1, 0, 0, 0]  # identity quat
 
-        # Hide green cylinder below floor.
-        green_qpos_adr = self._model.jnt_qposadr[self._green_joint_id]
-        self._data.qpos[green_qpos_adr:green_qpos_adr + 3] = [0, 0, -1.0]
-
-        # Set arm home pose with small random perturbations on controlled joints.
-        home = [0.0, 0.5, -1.0, 0.0, 0.5, 0.0]
+        # Set arm home pose: gripper near workspace, pointing down.
+        # J5 = -(J2+J3) keeps the gripper pointing straight down.
+        j2_home, j3_home = -1.48, 1.8
+        home = [0.0, j2_home, j3_home, 0.0, -(j2_home + j3_home), 0.0]
         for i, (jid, val) in enumerate(zip(self._arm_joint_ids, home)):
             if i in _CONTROLLED_JOINTS:
                 val += self._rng.uniform(-0.05, 0.05)
             self._data.qpos[self._model.jnt_qposadr[jid]] = val
+            self._data.ctrl[self._arm_actuator_ids[i]] = self._data.qpos[self._model.jnt_qposadr[jid]]
+
+        # Start gripper half-open.
+        self._data.qpos[self._model.jnt_qposadr[self._gripper_joint_id]] = 0.02
+        self._data.ctrl[self._gripper_actuator_id] = 0.02
 
         mujoco.mj_forward(self._model, self._data)
+
+        # Persistent commanded positions — avoids feedback drift from reading qpos.
+        self._cmd_pos = np.array([
+            self._data.qpos[self._model.jnt_qposadr[jid]] for jid in self._arm_joint_ids
+        ])
 
         self._step_count = 0
         self._hold_count = 0
@@ -130,34 +136,27 @@ class JakaZu5PickCubeEnv(gymnasium.Env):
         action = np.clip(action, -1.0, 1.0)
 
         # Velocity scaling for controlled joints.
-        vel_scale = 1.0
+        vel_scale = 3.0
         joint_vel = action[:3] * vel_scale
         gripper_cmd = action[3]
 
         dt = self._model.opt.timestep * _PHYSICS_STEPS_PER_CONTROL
 
-        # Read current joint positions.
-        current_pos = np.array([
-            self._data.qpos[self._model.jnt_qposadr[self._arm_joint_ids[i]]]
-            for i in range(6)
-        ])
-
-        # Compute targets: only update controlled joints (J1-J3), lock wrist (J4-J6).
-        target_pos = current_pos.copy()
+        # Update commanded positions (persistent, avoids feedback drift).
         for idx, ctrl_j in enumerate(_CONTROLLED_JOINTS):
-            new_val = current_pos[ctrl_j] + joint_vel[idx] * dt
+            new_val = self._cmd_pos[ctrl_j] + joint_vel[idx] * dt
             lo = self._model.jnt_range[self._arm_joint_ids[ctrl_j], 0]
             hi = self._model.jnt_range[self._arm_joint_ids[ctrl_j], 1]
-            target_pos[ctrl_j] = np.clip(new_val, lo, hi)
+            self._cmd_pos[ctrl_j] = np.clip(new_val, lo, hi)
 
-        # Lock wrist joints to maintain top-down orientation.
-        target_pos[3] = _WRIST_HOME[0]
-        target_pos[4] = _WRIST_HOME[1]
-        target_pos[5] = _WRIST_HOME[2]
+        # Lock wrist: J4=0, J5=-(J2+J3) for downward gripper, J6=0.
+        self._cmd_pos[3] = 0.0
+        self._cmd_pos[4] = -(self._cmd_pos[1] + self._cmd_pos[2])
+        self._cmd_pos[5] = 0.0
 
         # Apply actuator controls.
         for i, aid in enumerate(self._arm_actuator_ids):
-            self._data.ctrl[aid] = target_pos[i]
+            self._data.ctrl[aid] = self._cmd_pos[i]
 
         # Gripper: map [-1,1] to [open, closed]. >0 = close, <0 = open.
         gripper_target = 0.0 if gripper_cmd > 0.0 else _GRIPPER_MAX_OPEN
@@ -206,13 +205,20 @@ class JakaZu5PickCubeEnv(gymnasium.Env):
         r_reach = -2.0 * dist
 
         # 2. Grasp reward.
-        r_grasp = 1.0 if has_grasp else 0.0
+        r_grasp = 2.0 if has_grasp else 0.0
 
-        # 3. Lift reward (only if grasped).
+        # 3. Lift reward (only if grasped) — strong signal to lift high.
         lift_height = max(0.0, cube_z - _TABLE_Z)
-        r_lift = 5.0 * lift_height if has_grasp else 0.0
+        r_lift = 15.0 * lift_height if has_grasp else 0.0
 
-        # 4. Success check.
+        # 4. Height bonus: extra reward for reaching near/above threshold.
+        r_height_bonus = 0.0
+        if has_grasp and cube_z >= _LIFT_THRESHOLD - 0.03:
+            r_height_bonus = 3.0
+        if has_grasp and cube_z >= _LIFT_THRESHOLD:
+            r_height_bonus = 5.0
+
+        # 5. Success check.
         terminated = False
         success = False
         if cube_z >= _LIFT_THRESHOLD and has_grasp:
@@ -223,16 +229,15 @@ class JakaZu5PickCubeEnv(gymnasium.Env):
         else:
             self._hold_count = 0
 
-        r_success = 10.0 if success else 0.0
+        r_success = 20.0 if success else 0.0
 
-        # 5. Action regularization (implicit via action clipping).
         # 6. Penalty if cube falls off table.
         r_penalty = 0.0
         if cube_z < _TABLE_Z - 0.05:
             r_penalty = -5.0
             terminated = True
 
-        reward = r_reach + r_grasp + r_lift + r_success + r_penalty
+        reward = r_reach + r_grasp + r_lift + r_height_bonus + r_success + r_penalty
 
         info = {
             "dist": dist,
@@ -240,6 +245,7 @@ class JakaZu5PickCubeEnv(gymnasium.Env):
             "has_grasp": has_grasp,
             "hold_count": self._hold_count,
             "success": success,
+            "is_success": success,  # SB3 EvalCallback tracks this automatically
         }
         return reward, terminated, info
 

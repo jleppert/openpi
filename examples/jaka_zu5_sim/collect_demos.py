@@ -137,12 +137,15 @@ def main(args: Args) -> None:
 
             # Map 4D RL action to 8D DROID format.
             # RL: [J1_vel, J2_vel, J3_vel, gripper_cmd]
-            # DROID: [J1_vel, J2_vel, J3_vel, J4_vel(0), J5_vel(0), J6_vel(0), J7_vel(0), gripper]
+            # DROID: [J1_vel, J2_vel, J3_vel, J4_vel, J5_vel, J6_vel, J7_vel, gripper]
+            # J5 tracks -(J2+J3) each step, so its effective velocity = -(J2_vel + J3_vel).
             droid_action = np.zeros(8, dtype=np.float32)
             droid_action[0] = rl_action[0]
             droid_action[1] = rl_action[1]
             droid_action[2] = rl_action[2]
-            # dims 3-6 are zero (locked wrist + padded 7th DOF)
+            # J4=0, J5 compensates for J2+J3 to keep gripper pointing down, J6=0
+            droid_action[4] = -(rl_action[1] + rl_action[2])
+            # dim 6 is zero (padded 7th DOF)
             droid_action[7] = 1.0 if rl_action[3] <= 0.0 else 0.0  # invert: RL >0=close → DROID >0.5=open
 
             episode_frames.append({
