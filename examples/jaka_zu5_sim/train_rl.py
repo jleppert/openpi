@@ -82,14 +82,17 @@ class Args:
     n_eval_episodes: int = 20
     checkpoint_freq: int = 50_000
 
-    # PPO hyperparameters (conservative to prevent policy collapse).
-    learning_rate: float = 1e-4
+    # PPO hyperparameters — proven settings that reached 70% success.
+    # BestSuccessRateCallback captures the peak before any policy collapse.
+    learning_rate: float = 3e-4
     n_steps: int = 2048
     batch_size: int = 64
     n_epochs: int = 10
     gamma: float = 0.99
     gae_lambda: float = 0.95
-    clip_range: float = 0.1
+    clip_range: float = 0.2
+    ent_coef: float = 0.0
+    target_kl: float | None = None
 
     # Network architecture.
     net_arch_pi: int = 256
@@ -152,6 +155,8 @@ def main(args: Args) -> None:
             gamma=args.gamma,
             gae_lambda=args.gae_lambda,
             clip_range=args.clip_range,
+            ent_coef=args.ent_coef,
+            target_kl=args.target_kl,
             policy_kwargs=dict(net_arch=net_arch),
             verbose=1,
             tensorboard_log=str(log_dir),

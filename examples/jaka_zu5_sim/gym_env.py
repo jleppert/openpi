@@ -29,8 +29,8 @@ _MAX_EPISODE_STEPS = 200
 _TABLE_Z = 0.37
 
 # Cube randomization bounds (x, y on table surface).
-_CUBE_X_RANGE = (0.50, 0.70)
-_CUBE_Y_RANGE = (-0.10, 0.10)
+_CUBE_X_RANGE = (0.62, 0.78)
+_CUBE_Y_RANGE = (-0.08, 0.08)
 
 # Lift success threshold (10cm above table).
 _LIFT_THRESHOLD = _TABLE_Z + 0.10
@@ -89,8 +89,7 @@ class JakaZu5PickCubeEnv(gymnasium.Env):
 
         self._step_count = 0
         self._hold_count = 0
-        self._first_grasp_given = False
-        self._max_lift_rewarded = 0.0
+        self._grasp_steps = 0
         self._rng = np.random.default_rng()
 
     def reset(self, *, seed=None, options=None):
@@ -118,9 +117,9 @@ class JakaZu5PickCubeEnv(gymnasium.Env):
             self._data.qpos[self._model.jnt_qposadr[jid]] = val
             self._data.ctrl[self._arm_actuator_ids[i]] = self._data.qpos[self._model.jnt_qposadr[jid]]
 
-        # Start gripper half-open.
-        self._data.qpos[self._model.jnt_qposadr[self._gripper_joint_id]] = 0.02
-        self._data.ctrl[self._gripper_actuator_id] = 0.02
+        # Start gripper open.
+        self._data.qpos[self._model.jnt_qposadr[self._gripper_joint_id]] = 0.03
+        self._data.ctrl[self._gripper_actuator_id] = 0.03
 
         mujoco.mj_forward(self._model, self._data)
 
@@ -131,8 +130,7 @@ class JakaZu5PickCubeEnv(gymnasium.Env):
 
         self._step_count = 0
         self._hold_count = 0
-        self._first_grasp_given = False
-        self._max_lift_rewarded = 0.0
+        self._grasp_steps = 0
 
         return self._get_obs(), {}
 
@@ -205,22 +203,22 @@ class JakaZu5PickCubeEnv(gymnasium.Env):
         # Check finger-cube contacts.
         has_grasp = self._check_grasp()
 
-        # 1. Reach reward: negative distance (per-step, guides approach).
-        r_reach = -2.0 * dist
+        # 1. Reach reward: tanh shaping — bounded [0, 2], strongest gradient near cube.
+        r_reach = (1 - np.tanh(10.0 * dist)) * 2.0
 
-        # 2. Grasp bonus: one-time reward for first grasp (not per-step).
+        # 2. Grasp reward: per-step while grasping (dense signal).
         r_grasp = 0.0
-        if has_grasp and not self._first_grasp_given:
-            r_grasp = 10.0
-            self._first_grasp_given = True
+        if has_grasp:
+            r_grasp = 2.0
+            self._grasp_steps += 1
 
-        # 3. Lift bonus: reward for reaching new max height (one-time per height).
-        # Only fires when the cube reaches a new record height while grasped.
+        # 3. Lift reward: tanh on remaining distance to threshold.
+        #    Gradient is strongest approaching the success height.
         lift_height = max(0.0, cube_z - _TABLE_Z)
         r_lift = 0.0
-        if has_grasp and lift_height > self._max_lift_rewarded:
-            r_lift = 50.0 * (lift_height - self._max_lift_rewarded)
-            self._max_lift_rewarded = lift_height
+        if has_grasp:
+            remaining = max(0.0, 0.10 - lift_height)
+            r_lift = (1 - np.tanh(10.0 * remaining)) * 15.0
 
         # 4. Success check.
         terminated = False
@@ -233,26 +231,24 @@ class JakaZu5PickCubeEnv(gymnasium.Env):
         else:
             self._hold_count = 0
 
-        r_success = 100.0 if success else 0.0
+        r_success = 20.0 if success else 0.0
 
-        # 5. Time penalty: small cost per step to encourage finishing fast.
-        r_time = -0.1
-
-        # 6. Penalty if cube falls off table.
+        # 5. Penalty if cube falls off table.
         r_penalty = 0.0
         if cube_z < _TABLE_Z - 0.05:
             r_penalty = -10.0
             terminated = True
 
-        reward = r_reach + r_grasp + r_lift + r_success + r_time + r_penalty
+        reward = r_reach + r_grasp + r_lift + r_success + r_penalty
 
         info = {
             "dist": dist,
             "cube_z": cube_z,
             "has_grasp": has_grasp,
             "hold_count": self._hold_count,
+            "grasp_steps": self._grasp_steps,
             "success": success,
-            "is_success": success,  # SB3 EvalCallback tracks this automatically
+            "is_success": success,
         }
         return reward, terminated, info
 

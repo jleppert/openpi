@@ -1,0 +1,138 @@
+<mujoco model="jaka_zu5_sim">
+  <compiler angle="radian" meshdir="." autolimits="true"/>
+
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="implicitfast" noslip_iterations="3"/>
+
+  <default>
+    <joint damping="5" armature="0.1"/>
+    <geom condim="4" friction="1 0.5 0.01"/>
+    <position kp="100" ctrlrange="-6.2832 6.2832"/>
+  </default>
+
+  <asset>
+    <texture name="grid" type="2d" builtin="checker" rgb1="0.4 0.4 0.4" rgb2="0.5 0.5 0.5" width="512" height="512"/>
+    <material name="grid_mat" texture="grid" texrepeat="8 8" reflectance="0.1"/>
+    <material name="arm_mat" rgba="0.85 0.85 0.85 1"/>
+    <material name="joint_mat" rgba="0.3 0.3 0.3 1"/>
+    <material name="gripper_mat" rgba="0.2 0.2 0.2 1"/>
+    <material name="table_mat" rgba="0.6 0.45 0.3 1"/>
+    <material name="red_mat" rgba="0.9 0.15 0.15 1"/>
+    <material name="green_mat" rgba="0.15 0.8 0.15 1"/>
+  </asset>
+
+  <worldbody>
+    <!-- Floor -->
+    <geom name="floor" type="plane" size="2 2 0.01" material="grid_mat" pos="0 0 0"/>
+    <light name="overhead" pos="0.5 0 2.5" dir="0 0 -1" diffuse="0.8 0.8 0.8" specular="0.3 0.3 0.3"/>
+    <light name="fill" pos="-1 1 2" dir="0.3 -0.3 -1" diffuse="0.4 0.4 0.4"/>
+
+    <!-- Table -->
+    <body name="table" pos="0.5 0 0.35">
+      <geom name="table_top" type="box" size="0.4 0.5 0.02" pos="0 0 0" material="table_mat" mass="20"/>
+      <geom name="table_leg1" type="cylinder" size="0.03 0.175" pos="0.35 0.45 -0.195" material="table_mat"/>
+      <geom name="table_leg2" type="cylinder" size="0.03 0.175" pos="-0.35 0.45 -0.195" material="table_mat"/>
+      <geom name="table_leg3" type="cylinder" size="0.03 0.175" pos="0.35 -0.45 -0.195" material="table_mat"/>
+      <geom name="table_leg4" type="cylinder" size="0.03 0.175" pos="-0.35 -0.45 -0.195" material="table_mat"/>
+    </body>
+
+    <!-- Objects on table -->
+    <body name="red_cube" pos="0.70 0 0.400">
+      <freejoint name="red_cube_joint"/>
+      <geom name="red_cube_geom" type="box" size="0.03 0.03 0.03" material="red_mat" mass="0.08" friction="3 0.5 0.01" solref="0.01 1" solimp="0.99 0.99 0.01"/>
+    </body>
+<!-- JAKA Zu5 Robot Arm (mounted on table) -->
+    <body name="base_link" pos="0.2 0 0.37">
+      <geom name="base_geom" type="cylinder" size="0.065 0.02" material="joint_mat" mass="0.515"/>
+
+      <!-- Joint 1: Base rotation (Z-axis) -->
+      <body name="link1" pos="0 0 0.041">
+        <joint name="joint1" type="hinge" axis="0 0 1" range="-6.2832 6.2832" damping="8"/>
+        <geom name="link1_base" type="cylinder" size="0.055 0.04" pos="0 0 0.02" material="joint_mat" mass="0.5"/>
+        <geom name="link1_arm" type="capsule" fromto="0 0 0.04 0 0 0.08" size="0.04" material="arm_mat" mass="1.428"/>
+
+        <!-- Joint 2: Shoulder (Y-axis, pitch) -->
+        <body name="link2" pos="0 0 0.121">
+          <joint name="joint2" type="hinge" axis="0 1 0" range="-1.4835 4.6252" damping="20"/>
+          <geom name="link2_joint" type="sphere" size="0.05" material="joint_mat" mass="0.5"/>
+          <geom name="link2_arm" type="capsule" fromto="0 0 0 0.36 0 0" size="0.035" material="arm_mat" mass="4.962"/>
+
+          <!-- Joint 3: Elbow (Y-axis, pitch) -->
+          <body name="link3" pos="0.36 0 0">
+            <joint name="joint3" type="hinge" axis="0 1 0" range="-3.0543 3.0543" damping="16"/>
+            <geom name="link3_joint" type="sphere" size="0.045" material="joint_mat" mass="0.4"/>
+            <geom name="link3_arm" type="capsule" fromto="0 0 0 0.303 0 0" size="0.03" material="arm_mat" mass="1.710"/>
+
+            <!-- Joint 4: Wrist 1 (X-axis, roll) -->
+            <body name="link4" pos="0.303 0 0">
+              <joint name="joint4" type="hinge" axis="1 0 0" range="-1.4835 4.6252" damping="3"/>
+              <geom name="link4_joint" type="sphere" size="0.035" material="joint_mat" mass="0.2"/>
+              <geom name="link4_arm" type="capsule" fromto="0 0 0 0.073 0 0" size="0.025" material="arm_mat" mass="0.507"/>
+
+              <!-- Joint 5: Wrist 2 (Y-axis, pitch) -->
+              <body name="link5" pos="0.073 0 0">
+                <joint name="joint5" type="hinge" axis="0 1 0" range="-6.2832 6.2832" damping="2"/>
+                <geom name="link5_joint" type="sphere" size="0.03" material="joint_mat" mass="0.2"/>
+                <geom name="link5_arm" type="capsule" fromto="0 0 0 0 0 -0.069" size="0.022" material="arm_mat" mass="0.607"/>
+
+                <!-- Joint 6: Wrist 3 (Z-axis, roll) -->
+                <body name="link6" pos="0 0 -0.069">
+                  <joint name="joint6" type="hinge" axis="0 0 1" range="-6.2832 6.2832" damping="1"/>
+                  <geom name="link6_flange" type="cylinder" size="0.028 0.012" material="joint_mat" mass="0.180"/>
+
+                  <!-- 2-Finger Parallel Gripper -->
+                  <body name="gripper_base" pos="0 0 -0.03">
+                    <geom name="gripper_mount" type="box" size="0.025 0.04 0.015" material="gripper_mat" mass="0.3"/>
+
+                    <!-- Left Finger -->
+                    <body name="left_finger" pos="0 0.02 -0.015">
+                      <joint name="finger_left" type="slide" axis="0 1 0" range="0 0.04" damping="5"/>
+                      <geom name="left_finger_geom" type="box" size="0.012 0.008 0.04" pos="0 0 -0.04" material="gripper_mat" mass="0.05" friction="3 0.5 0.01" solref="0.01 1" solimp="0.99 0.99 0.01"/>
+                    </body>
+
+                    <!-- Right Finger (mirrored) -->
+                    <body name="right_finger" pos="0 -0.02 -0.015">
+                      <joint name="finger_right" type="slide" axis="0 -1 0" range="0 0.04" damping="5"/>
+                      <geom name="right_finger_geom" type="box" size="0.012 0.008 0.04" pos="0 0 -0.04" material="gripper_mat" mass="0.05" friction="3 0.5 0.01" solref="0.01 1" solimp="0.99 0.99 0.01"/>
+                    </body>
+
+                    <!-- Wrist Camera -->
+                    <camera name="wrist_cam" pos="0 0 -0.08" xyaxes="1 0 0 0 -1 0" fovy="60"/>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+
+    <!-- External Camera (fixed, 45-degree overhead view of workspace) -->
+    <camera name="external_cam" pos="1.2 -0.8 1.2" xyaxes="0.6 0.8 0 -0.35 0.25 0.9" fovy="55"/>
+  </worldbody>
+
+  <!-- Gripper finger symmetry constraint -->
+  <equality>
+    <joint joint1="finger_left" joint2="finger_right" polycoef="0 1 0 0 0"/>
+  </equality>
+
+  <!-- Home pose: arm near workspace, gripper half-open, pointing down -->
+  <!-- qpos order: red_cube(7), J1-J6(6), finger_left(1), finger_right(1) -->
+  <!-- ctrl order: act_joint1-6(6), act_gripper(1) -->
+  <keyframe>
+    <key name="home"
+         qpos="0.70 0 0.400 1 0 0 0  0 -1.48 1.8 0 -0.32 0  0.03 0.03"
+         ctrl="0 -1.48 1.8 0 -0.32 0  0.03"/>
+  </keyframe>
+
+  <actuator>
+    <!-- Arm joint position actuators -->
+    <position name="act_joint1" joint="joint1" kp="400" ctrlrange="-6.2832 6.2832"/>
+    <position name="act_joint2" joint="joint2" kp="1200" ctrlrange="-1.4835 4.6252"/>
+    <position name="act_joint3" joint="joint3" kp="800" ctrlrange="-3.0543 3.0543"/>
+    <position name="act_joint4" joint="joint4" kp="200" ctrlrange="-1.4835 4.6252"/>
+    <position name="act_joint5" joint="joint5" kp="400" ctrlrange="-6.2832 6.2832"/>
+    <position name="act_joint6" joint="joint6" kp="100" ctrlrange="-6.2832 6.2832"/>
+    <!-- Gripper actuator (controls both fingers via equality constraint) -->
+    <position name="act_gripper" joint="finger_left" kp="1000" ctrlrange="0 0.04"/>
+  </actuator>
+</mujoco>
