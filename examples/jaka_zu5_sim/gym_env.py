@@ -101,7 +101,7 @@ class JakaZu5PickCubeEnv(gymnasium.Env):
         # Randomize cube position on table.
         cube_x = self._rng.uniform(*_CUBE_X_RANGE)
         cube_y = self._rng.uniform(*_CUBE_Y_RANGE)
-        cube_z = _TABLE_Z + 0.025  # half cube size above table
+        cube_z = _TABLE_Z + 0.03  # half cube size above table
         cube_qpos_adr = self._model.jnt_qposadr[self._cube_joint_id]
         self._data.qpos[cube_qpos_adr:cube_qpos_adr + 3] = [cube_x, cube_y, cube_z]
         self._data.qpos[cube_qpos_adr + 3:cube_qpos_adr + 7] = [1, 0, 0, 0]  # identity quat
