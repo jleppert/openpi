@@ -1,6 +1,7 @@
 """Detailed evaluation of a trained RL model for the JAKA Zu5 pick-cube task.
 
 Runs many episodes and collects per-step diagnostics to understand failure modes.
+Use --save-videos N to record the first N episodes as MP4 files.
 """
 
 import dataclasses
@@ -9,7 +10,7 @@ import pathlib
 import sys
 
 import numpy as np
-from stable_baselines3 import PPO
+from stable_baselines3 import SAC
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import gym_env  # noqa: E402
@@ -33,7 +34,6 @@ class EpisodeStats:
     total_grasp_steps: int = 0
     first_real_lift_step: int | None = None  # cube > 2cm above INITIAL pos
     max_lift_height: float = 0.0  # above initial pos, not table
-    max_hold_count: int = 0
     # Distances
     min_dist: float = float("inf")
     final_dist: float = 0.0
@@ -50,12 +50,45 @@ class EpisodeStats:
     action_trace: list = dataclasses.field(default_factory=list)
 
 
-def run_eval(model_path: str, n_episodes: int = 200, seed: int = 42, verbose: bool = True):
-    logging.info("Loading model from %s", model_path)
-    model = PPO.load(model_path)
+def _add_overlay(frame, step, info, stats):
+    """Burn a simple text overlay into the frame (no extra dependencies)."""
+    # We draw text by writing into pixel rows — keep it simple with a status bar.
+    h, w = frame.shape[:2]
+    # Black bar at top
+    frame[:20, :] = 0
+    # Encode status as colored pixels in top-left corner
+    dist = info["dist"]
+    grasp = info["has_grasp"]
+    cube_z = info["cube_z"]
+    lift = max(0.0, cube_z - _TABLE_Z)
+    # Green bar = grasp active, width proportional to lift height
+    bar_w = min(int(lift / 0.12 * w), w)
+    if grasp:
+        frame[:20, :bar_w] = [0, 200, 0]
+    # Red dot if cube dropped
+    if cube_z < _TABLE_Z - 0.03:
+        frame[:20, :30] = [200, 0, 0]
+    return frame
 
-    env = gym_env.JakaZu5PickCubeEnv()
+
+def run_eval(model_path: str, n_episodes: int = 200, seed: int = 42,
+             save_videos: int = 0, video_dir: str = "data/jaka_zu5_sim/eval_videos",
+             verbose: bool = True):
+    logging.info("Loading model from %s", model_path)
+
+    # Use render_mode if we need videos.
+    render_mode = "rgb_array" if save_videos > 0 else None
+    env = gym_env.JakaZu5PickCubeEnv(render_mode=render_mode)
+
+    # HER models require an env at load time for replay buffer setup.
+    model = SAC.load(model_path, env=env)
     rng = np.random.default_rng(seed)
+
+    if save_videos > 0:
+        import imageio
+        video_path = pathlib.Path(video_dir)
+        video_path.mkdir(parents=True, exist_ok=True)
+        logging.info("Will save %d episode videos to %s", save_videos, video_path)
 
     episodes: list[EpisodeStats] = []
 
@@ -64,13 +97,15 @@ def run_eval(model_path: str, n_episodes: int = 200, seed: int = 42, verbose: bo
         obs, _ = env.reset(seed=ep_seed)
         stats = EpisodeStats()
 
-        # Record initial cube position from observation
-        # obs layout: [joint_pos(6), gripper(1), cube_xyz(3), dist(1)]
-        stats.cube_init_x = float(obs[7])
-        stats.cube_init_y = float(obs[8])
-        initial_cube_z = float(obs[9])
+        # Record initial cube position from dict observation.
+        stats.cube_init_x = float(obs['achieved_goal'][0])
+        stats.cube_init_y = float(obs['achieved_goal'][1])
+        initial_cube_z = float(obs['achieved_goal'][2])
 
-        for step in range(200):
+        recording = save_videos > 0 and ep < save_videos
+        frames = []
+
+        for step in range(100):
             action, _ = model.predict(obs, deterministic=True)
             obs, reward, terminated, truncated, info = env.step(action)
 
@@ -80,12 +115,10 @@ def run_eval(model_path: str, n_episodes: int = 200, seed: int = 42, verbose: bo
             dist = info["dist"]
             cube_z = info["cube_z"]
             has_grasp = info["has_grasp"]
-            hold_count = info["hold_count"]
 
             stats.min_dist = min(stats.min_dist, dist)
             stats.final_dist = dist
             stats.final_cube_z = cube_z
-            stats.max_hold_count = max(stats.max_hold_count, hold_count)
 
             # Track gripper actions
             if action[3] > 0:  # close
@@ -104,6 +137,13 @@ def run_eval(model_path: str, n_episodes: int = 200, seed: int = 42, verbose: bo
             if real_lift > 0.02 and stats.first_real_lift_step is None:
                 stats.first_real_lift_step = step
 
+            # Record video frame
+            if recording:
+                frame = env.render()
+                if frame is not None:
+                    frame = _add_overlay(frame.copy(), step, info, stats)
+                    frames.append(frame)
+
             # Sample traces every 5 steps
             if step % 5 == 0:
                 stats.dist_trace.append(dist)
@@ -111,19 +151,28 @@ def run_eval(model_path: str, n_episodes: int = 200, seed: int = 42, verbose: bo
                 stats.grasp_trace.append(has_grasp)
                 stats.action_trace.append(action.copy())
 
+            # Check success on every step (HER doesn't terminate on success).
+            if info.get("is_success", False):
+                stats.success = True
+
             if terminated:
-                if info.get("success", False):
-                    stats.success = True
-                    stats.terminated_by = "success"
-                elif cube_z < _TABLE_Z - 0.05:
+                if cube_z < _TABLE_Z - 0.05:
                     stats.terminated_by = "drop"
                 break
 
             if truncated:
-                stats.terminated_by = "truncated"
+                # With HER, success episodes run to completion (truncated).
+                stats.terminated_by = "success" if stats.success else "truncated"
                 break
 
         episodes.append(stats)
+
+        # Save video
+        if recording and frames:
+            label = stats.terminated_by
+            fname = video_path / f"ep{ep:03d}_{label}_r{stats.total_reward:.0f}.mp4"
+            imageio.mimwrite(str(fname), frames, fps=15, quality=8)
+            logging.info("  Saved %s (%d frames)", fname.name, len(frames))
 
         if verbose and (ep + 1) % 50 == 0:
             recent = episodes[-50:]
@@ -255,7 +304,7 @@ def analyze(episodes: list[EpisodeStats]):
     # Timing distribution for successes
     if successes:
         print(f"\n## Success Timing Distribution")
-        bins = [0, 25, 30, 35, 40, 50, 75, 200]
+        bins = [0, 15, 25, 35, 50, 75, 100]
         for i in range(len(bins) - 1):
             count = sum(1 for e in successes if bins[i] <= e.total_steps < bins[i+1])
             bar = "#" * min(count, 60)
@@ -287,8 +336,11 @@ if __name__ == "__main__":
     parser.add_argument("--model", type=str, default="data/jaka_zu5_sim/rl/best_success_model/best_success_model")
     parser.add_argument("--episodes", type=int, default=200)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--save-videos", type=int, default=0, help="Save first N episodes as MP4 videos")
+    parser.add_argument("--video-dir", type=str, default="data/jaka_zu5_sim/eval_videos", help="Directory for video output")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, force=True)
-    episodes = run_eval(args.model, n_episodes=args.episodes, seed=args.seed)
+    episodes = run_eval(args.model, n_episodes=args.episodes, seed=args.seed,
+                        save_videos=args.save_videos, video_dir=args.video_dir)
     analyze(episodes)

@@ -23,7 +23,7 @@ _CONTROLLED_JOINTS = [0, 1, 2]  # indices into the 6 arm joints
 
 # Physics.
 _PHYSICS_STEPS_PER_CONTROL = 33  # ~15 Hz control at 0.002s timestep
-_MAX_EPISODE_STEPS = 200
+_MAX_EPISODE_STEPS = 100
 
 # Table surface height (from MJCF: table body z=0.35, top half-height=0.02).
 _TABLE_Z = 0.37
@@ -32,15 +32,18 @@ _TABLE_Z = 0.37
 _CUBE_X_RANGE = (0.62, 0.78)
 _CUBE_Y_RANGE = (-0.08, 0.08)
 
-# Lift success threshold (10cm above table).
-_LIFT_THRESHOLD = _TABLE_Z + 0.10
-_HOLD_STEPS_REQUIRED = 8  # ~0.5 second at 15 Hz
+# HER distance threshold — cube must be within this of desired_goal to count as success.
+_HER_DIST_THRESHOLD = 0.05
 
 
 class JakaZu5PickCubeEnv(gymnasium.Env):
-    """Pick-cube task for RL training with top-down grasp constraint.
+    """Pick-cube GoalEnv for HER (Hindsight Experience Replay).
 
-    Observation (11D): [joint_pos(6), gripper_opening(1), cube_xyz(3), gripper_to_cube_dist(1)]
+    Observation dict:
+        'observation': (22,) — joint_pos(6), joint_vel(6), gripper(1),
+                                gripper_xyz(3), cube_xyz(3), rel_xyz(3)
+        'achieved_goal': (3,) — cube current xyz
+        'desired_goal': (3,) — target xyz for cube (randomized)
     Action (4D): [J1_vel, J2_vel, J3_vel, gripper_cmd]
     """
 
@@ -78,18 +81,22 @@ class JakaZu5PickCubeEnv(gymnasium.Env):
         self._cube_geom = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_GEOM, "red_cube_geom")
 
 
-        # Spaces.
-        self.observation_space = gymnasium.spaces.Box(
-            low=-np.inf, high=np.inf, shape=(11,), dtype=np.float32
-        )
+        # Spaces — GoalEnv-style dict observation for HER.
+        # observation (22D): joint_pos(6), joint_vel(6), gripper(1), gripper_xyz(3), cube_xyz(3), rel_xyz(3)
+        self.observation_space = gymnasium.spaces.Dict({
+            "observation": gymnasium.spaces.Box(-np.inf, np.inf, (22,), np.float32),
+            "achieved_goal": gymnasium.spaces.Box(-np.inf, np.inf, (3,), np.float32),
+            "desired_goal": gymnasium.spaces.Box(-np.inf, np.inf, (3,), np.float32),
+        })
         # 4D: J1_vel, J2_vel, J3_vel, gripper_cmd
         self.action_space = gymnasium.spaces.Box(
             low=-1.0, high=1.0, shape=(4,), dtype=np.float32
         )
 
         self._step_count = 0
-        self._hold_count = 0
         self._grasp_steps = 0
+        self._gripper_state = _GRIPPER_MAX_OPEN  # start open
+        self._desired_goal = np.zeros(3, dtype=np.float32)
         self._rng = np.random.default_rng()
 
     def reset(self, *, seed=None, options=None):
@@ -107,6 +114,21 @@ class JakaZu5PickCubeEnv(gymnasium.Env):
         self._data.qpos[cube_qpos_adr:cube_qpos_adr + 3] = [cube_x, cube_y, cube_z]
         self._data.qpos[cube_qpos_adr + 3:cube_qpos_adr + 7] = [1, 0, 0, 0]  # identity quat
 
+        # Randomize goal: 50% on table (push), 50% in air (lift).
+        # Ensure minimum distance from cube start so goals aren't trivially solved.
+        cube_start = np.array([cube_x, cube_y, cube_z], dtype=np.float32)
+        for _ in range(100):  # rejection sampling
+            goal_x = cube_x + self._rng.uniform(-0.10, 0.10)
+            goal_y = cube_y + self._rng.uniform(-0.10, 0.10)
+            if self._rng.random() < 0.5:
+                goal_z = _TABLE_Z + 0.03  # table level (push target)
+            else:
+                goal_z = self._rng.uniform(_TABLE_Z + 0.03, _TABLE_Z + 0.15)
+            goal = np.array([goal_x, goal_y, goal_z], dtype=np.float32)
+            if np.linalg.norm(goal - cube_start) > _HER_DIST_THRESHOLD:
+                break
+        self._desired_goal = goal
+
         # Set arm home pose: gripper near workspace, pointing down.
         # J5 = -(J2+J3) keeps the gripper pointing straight down.
         j2_home, j3_home = -1.48, 1.8
@@ -117,9 +139,9 @@ class JakaZu5PickCubeEnv(gymnasium.Env):
             self._data.qpos[self._model.jnt_qposadr[jid]] = val
             self._data.ctrl[self._arm_actuator_ids[i]] = self._data.qpos[self._model.jnt_qposadr[jid]]
 
-        # Start gripper open.
-        self._data.qpos[self._model.jnt_qposadr[self._gripper_joint_id]] = 0.03
-        self._data.ctrl[self._gripper_actuator_id] = 0.03
+        # Start gripper open — use _GRIPPER_MAX_OPEN consistently.
+        self._data.qpos[self._model.jnt_qposadr[self._gripper_joint_id]] = _GRIPPER_MAX_OPEN
+        self._data.ctrl[self._gripper_actuator_id] = _GRIPPER_MAX_OPEN
 
         mujoco.mj_forward(self._model, self._data)
 
@@ -129,8 +151,8 @@ class JakaZu5PickCubeEnv(gymnasium.Env):
         ])
 
         self._step_count = 0
-        self._hold_count = 0
         self._grasp_steps = 0
+        self._gripper_state = _GRIPPER_MAX_OPEN
 
         return self._get_obs(), {}
 
@@ -152,17 +174,27 @@ class JakaZu5PickCubeEnv(gymnasium.Env):
             self._cmd_pos[ctrl_j] = np.clip(new_val, lo, hi)
 
         # Lock wrist: J4=0, J5=-(J2+J3) for downward gripper, J6=0.
+        # Clip J5 to its physical limits to prevent command windup.
+        raw_j5 = -(self._cmd_pos[1] + self._cmd_pos[2])
+        j5_id = self._arm_joint_ids[4]
+        j5_lo = self._model.jnt_range[j5_id, 0]
+        j5_hi = self._model.jnt_range[j5_id, 1]
         self._cmd_pos[3] = 0.0
-        self._cmd_pos[4] = -(self._cmd_pos[1] + self._cmd_pos[2])
+        self._cmd_pos[4] = np.clip(raw_j5, j5_lo, j5_hi)
         self._cmd_pos[5] = 0.0
 
         # Apply actuator controls.
         for i, aid in enumerate(self._arm_actuator_ids):
             self._data.ctrl[aid] = self._cmd_pos[i]
 
-        # Gripper: map [-1,1] to [open, closed]. >0 = close, <0 = open.
-        gripper_target = 0.0 if gripper_cmd > 0.0 else _GRIPPER_MAX_OPEN
-        self._data.ctrl[self._gripper_actuator_id] = gripper_target
+        # Gripper: map [-1,1] to [open, closed] with dead zone to prevent chattering.
+        # Only change state when action is decisive (|cmd| > 0.2).
+        if gripper_cmd > 0.2:
+            self._gripper_state = 0.0  # close
+        elif gripper_cmd < -0.2:
+            self._gripper_state = _GRIPPER_MAX_OPEN  # open
+        # else: hold previous state (dead zone)
+        self._data.ctrl[self._gripper_actuator_id] = self._gripper_state
 
         # Step physics.
         for _ in range(_PHYSICS_STEPS_PER_CONTROL):
@@ -178,77 +210,66 @@ class JakaZu5PickCubeEnv(gymnasium.Env):
         return obs, reward, terminated, truncated, info
 
     def _get_obs(self):
-        """11D observation: [joint_pos(6), gripper(1), cube_xyz(3), dist(1)]."""
+        """GoalEnv dict observation (22D)."""
         joint_pos = np.array([
             self._data.qpos[self._model.jnt_qposadr[jid]] for jid in self._arm_joint_ids
+        ], dtype=np.float32)
+
+        joint_vel = np.array([
+            self._data.qvel[self._model.jnt_dofadr[jid]] for jid in self._arm_joint_ids
         ], dtype=np.float32)
 
         gripper_opening = np.array([
             self._data.qpos[self._model.jnt_qposadr[self._gripper_joint_id]] / _GRIPPER_MAX_OPEN
         ], dtype=np.float32)
 
-        cube_pos = self._data.xpos[self._cube_body_id].astype(np.float32)
-        gripper_pos = self._data.xpos[self._gripper_body_id].astype(np.float32)
-        dist = np.array([np.linalg.norm(gripper_pos - cube_pos)], dtype=np.float32)
+        gripper_xyz = self._data.xpos[self._gripper_body_id].astype(np.float32)
+        cube_xyz = self._data.xpos[self._cube_body_id].astype(np.float32)
+        rel_xyz = cube_xyz - gripper_xyz
 
-        return np.concatenate([joint_pos, gripper_opening, cube_pos, dist])
+        obs = np.concatenate([joint_pos, joint_vel, gripper_opening, gripper_xyz, cube_xyz, rel_xyz])  # (22,)
+        return {
+            "observation": obs,
+            "achieved_goal": cube_xyz.copy(),
+            "desired_goal": self._desired_goal.copy(),
+        }
+
+    def compute_reward(self, achieved_goal, desired_goal, _info):
+        """Sparse reward for HER. Called on batches by HerReplayBuffer."""
+        d = np.linalg.norm(achieved_goal - desired_goal, axis=-1)
+        return -(d > _HER_DIST_THRESHOLD).astype(np.float32)
 
     def _compute_reward(self):
-        gripper_pos = self._data.xpos[self._gripper_body_id]
         cube_pos = self._data.xpos[self._cube_body_id]
-        dist = np.linalg.norm(gripper_pos - cube_pos)
+        gripper_pos = self._data.xpos[self._gripper_body_id]
+        achieved = cube_pos.astype(np.float32)
 
-        cube_z = cube_pos[2]
+        # Sparse reward: 0 if cube within threshold of goal, else -1.
+        reward = float(self.compute_reward(achieved[None], self._desired_goal[None], {})[0])
 
-        # Check finger-cube contacts.
+        # Success = cube within threshold of desired goal.
+        is_success = np.linalg.norm(achieved - self._desired_goal) < _HER_DIST_THRESHOLD
+
+        # Keep grasp tracking for diagnostics only.
         has_grasp = self._check_grasp()
-
-        # 1. Reach reward: tanh shaping — bounded [0, 2], strongest gradient near cube.
-        r_reach = (1 - np.tanh(10.0 * dist)) * 2.0
-
-        # 2. Grasp reward: per-step while grasping (dense signal).
-        r_grasp = 0.0
         if has_grasp:
-            r_grasp = 2.0
             self._grasp_steps += 1
 
-        # 3. Lift reward: tanh on remaining distance to threshold.
-        #    Gradient is strongest approaching the success height.
-        lift_height = max(0.0, cube_z - _TABLE_Z)
-        r_lift = 0.0
-        if has_grasp:
-            remaining = max(0.0, 0.10 - lift_height)
-            r_lift = (1 - np.tanh(10.0 * remaining)) * 15.0
-
-        # 4. Success check.
+        # Terminate on cube drop (off table).
         terminated = False
-        success = False
-        if cube_z >= _LIFT_THRESHOLD and has_grasp:
-            self._hold_count += 1
-            if self._hold_count >= _HOLD_STEPS_REQUIRED:
-                success = True
-                terminated = True
-        else:
-            self._hold_count = 0
-
-        r_success = 20.0 if success else 0.0
-
-        # 5. Penalty if cube falls off table.
-        r_penalty = 0.0
-        if cube_z < _TABLE_Z - 0.05:
-            r_penalty = -10.0
+        if cube_pos[2] < _TABLE_Z - 0.05:
             terminated = True
 
-        reward = r_reach + r_grasp + r_lift + r_success + r_penalty
+        # NO success termination — fixed-length episodes work best with HER
+        # (HER "future" strategy needs future states to relabel).
 
         info = {
-            "dist": dist,
-            "cube_z": cube_z,
+            "dist": float(np.linalg.norm(gripper_pos - cube_pos)),
+            "cube_z": float(cube_pos[2]),
             "has_grasp": has_grasp,
-            "hold_count": self._hold_count,
             "grasp_steps": self._grasp_steps,
-            "success": success,
-            "is_success": success,
+            "is_success": bool(is_success),
+            "success": bool(is_success),
         }
         return reward, terminated, info
 
@@ -278,5 +299,5 @@ class JakaZu5PickCubeEnv(gymnasium.Env):
 
     def close(self):
         if self._renderer is not None:
-            self._renderer.close()
+            del self._renderer
             self._renderer = None

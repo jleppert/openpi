@@ -4,7 +4,7 @@ import pathlib
 import sys
 
 import numpy as np
-from stable_baselines3 import PPO
+from stable_baselines3 import SAC
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import gym_env
@@ -12,7 +12,7 @@ import gym_env
 
 def check_approach(model_path, target_x, target_y=0.0):
     """Run one episode with cube at a specific position and trace the gripper."""
-    model = PPO.load(model_path)
+    model = SAC.load(model_path)
     env = gym_env.JakaZu5PickCubeEnv()
 
     # Reset and manually place cube

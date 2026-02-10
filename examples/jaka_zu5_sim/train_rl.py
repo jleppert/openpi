@@ -1,14 +1,15 @@
-"""PPO training script for the JAKA Zu5 pick-cube task."""
+"""SAC training script for the JAKA Zu5 pick-cube task."""
 
 import dataclasses
 import logging
 import pathlib
 
 import numpy as np
-from stable_baselines3 import PPO
+from stable_baselines3 import SAC
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback, EvalCallback
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import SubprocVecEnv
+from stable_baselines3.her import HerReplayBuffer
 import tyro
 
 
@@ -70,34 +71,82 @@ class BestSuccessRateCallback(BaseCallback):
         return True
 
 
+class VideoEvalCallback(BaseCallback):
+    """Runs full eval_model analysis with video recording at regular intervals."""
+
+    def __init__(self, out_dir, eval_freq, n_eval_episodes=50, save_videos=5, verbose=1):
+        super().__init__(verbose)
+        self.out_dir = pathlib.Path(out_dir)
+        self.eval_freq = eval_freq
+        self.n_eval_episodes = n_eval_episodes
+        self.save_videos = save_videos
+
+    def _on_step(self) -> bool:
+        if self.n_calls % self.eval_freq != 0:
+            return True
+
+        import eval_model
+
+        timesteps = self.num_timesteps
+
+        # Save current model to a temp location for eval.
+        snap_path = self.out_dir / "checkpoints" / f"eval_snap_{timesteps}"
+        self.model.save(str(snap_path))
+
+        video_dir = str(self.out_dir / "eval_videos" / f"step_{timesteps}")
+        logging.info("=== VideoEval at %d steps: %d episodes, %d videos → %s ===",
+                      timesteps, self.n_eval_episodes, self.save_videos, video_dir)
+
+        episodes = eval_model.run_eval(
+            model_path=str(snap_path),
+            n_episodes=self.n_eval_episodes,
+            save_videos=self.save_videos,
+            video_dir=video_dir,
+            verbose=False,
+        )
+        eval_model.analyze(episodes)
+
+        # Log summary to tensorboard.
+        n_success = sum(1 for e in episodes if e.success)
+        n_drops = sum(1 for e in episodes if e.terminated_by == "drop")
+        self.logger.record("video_eval/success_rate", n_success / len(episodes))
+        self.logger.record("video_eval/drop_rate", n_drops / len(episodes))
+        self.logger.record("video_eval/mean_reward",
+                           np.mean([e.total_reward for e in episodes]))
+
+        return True
+
+
 @dataclasses.dataclass
 class Args:
     # Output directory for checkpoints and logs.
     out_dir: pathlib.Path = pathlib.Path("data/jaka_zu5_sim/rl")
 
     # Training parameters.
-    total_timesteps: int = 3_000_000
+    total_timesteps: int = 1_000_000
     n_envs: int = 32
     eval_freq: int = 10_000
     n_eval_episodes: int = 20
     checkpoint_freq: int = 50_000
 
-    # PPO hyperparameters — proven settings that reached 70% success.
-    # BestSuccessRateCallback captures the peak before any policy collapse.
-    learning_rate: float = 3e-4
-    n_steps: int = 2048
-    batch_size: int = 64
-    n_epochs: int = 10
-    gamma: float = 0.99
-    gae_lambda: float = 0.95
-    clip_range: float = 0.2
-    ent_coef: float = 0.0
-    target_kl: float | None = None
+    # SAC hyperparameters (tuned for HER, based on rl-baselines3-zoo FetchPickAndPlace).
+    learning_rate: float = 1e-3
+    buffer_size: int = 1_000_000
+    batch_size: int = 1024
+    tau: float = 0.05
+    gamma: float = 0.95
+    learning_starts: int = 5_000
+    train_freq: int = 1
+    gradient_steps: int = 4
 
     # Network architecture.
-    net_arch_pi: int = 256
-    net_arch_vf: int = 256
-    n_layers: int = 2
+    net_arch: int = 512
+    n_layers: int = 3
+
+    # Video evaluation during training.
+    video_eval_freq: int = 50_000
+    video_eval_episodes: int = 50
+    video_eval_videos: int = 5
 
     # Resume from checkpoint.
     resume: str | None = None
@@ -136,37 +185,39 @@ def main(args: Args) -> None:
         vec_env_cls=SubprocVecEnv,
     )
 
-    net_arch = dict(
-        pi=[args.net_arch_pi] * args.n_layers,
-        vf=[args.net_arch_vf] * args.n_layers,
-    )
+    net_arch = [args.net_arch] * args.n_layers
 
     if args.resume:
         logging.info("Resuming from %s", args.resume)
-        model = PPO.load(args.resume, env=train_envs)
+        model = SAC.load(args.resume, env=train_envs)
     else:
-        model = PPO(
-            "MlpPolicy",
+        model = SAC(
+            "MultiInputPolicy",
             train_envs,
+            replay_buffer_class=HerReplayBuffer,
+            replay_buffer_kwargs=dict(
+                n_sampled_goal=4,
+                goal_selection_strategy="future",
+            ),
             learning_rate=args.learning_rate,
-            n_steps=args.n_steps,
+            buffer_size=args.buffer_size,
             batch_size=args.batch_size,
-            n_epochs=args.n_epochs,
+            tau=args.tau,
             gamma=args.gamma,
-            gae_lambda=args.gae_lambda,
-            clip_range=args.clip_range,
-            ent_coef=args.ent_coef,
-            target_kl=args.target_kl,
+            learning_starts=args.learning_starts,
+            train_freq=args.train_freq,
+            gradient_steps=args.gradient_steps,
+            target_entropy=-2.0,
             policy_kwargs=dict(net_arch=net_arch),
             verbose=1,
             tensorboard_log=str(log_dir),
-            device="cpu",
+            device="auto",
         )
 
     checkpoint_cb = CheckpointCallback(
         save_freq=max(args.checkpoint_freq // args.n_envs, 1),
         save_path=str(args.out_dir / "checkpoints"),
-        name_prefix="ppo_jaka_pick_cube",
+        name_prefix="sac_jaka_pick_cube",
     )
 
     eval_cb = EvalCallback(
@@ -185,11 +236,19 @@ def main(args: Args) -> None:
         save_path=str(args.out_dir / "best_success_model"),
     )
 
-    logging.info("Starting PPO training for %d timesteps...", args.total_timesteps)
-    logging.info("  learning_rate=%.0e, clip_range=%.2f", args.learning_rate, args.clip_range)
+    video_eval_cb = VideoEvalCallback(
+        out_dir=args.out_dir,
+        eval_freq=max(args.video_eval_freq // args.n_envs, 1),
+        n_eval_episodes=args.video_eval_episodes,
+        save_videos=args.video_eval_videos,
+    )
+
+    logging.info("Starting SAC training for %d timesteps...", args.total_timesteps)
+    logging.info("  learning_rate=%.0e, buffer_size=%d, batch_size=%d", args.learning_rate, args.buffer_size, args.batch_size)
+    logging.info("  video eval every %d steps: %d episodes, %d videos", args.video_eval_freq, args.video_eval_episodes, args.video_eval_videos)
     model.learn(
         total_timesteps=args.total_timesteps,
-        callback=[checkpoint_cb, eval_cb, success_cb],
+        callback=[checkpoint_cb, eval_cb, success_cb, video_eval_cb],
         progress_bar=True,
     )
 
