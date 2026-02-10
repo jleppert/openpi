@@ -1,4 +1,7 @@
-"""SAC training script for the JAKA Zu5 pick-cube task."""
+"""SAC training script for the JAKA Zu5 pick-cube task.
+
+Plain SAC with dense reward — RL learns XY positioning, grasping is scripted.
+"""
 
 import dataclasses
 import logging
@@ -9,7 +12,6 @@ from stable_baselines3 import SAC
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback, EvalCallback
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import SubprocVecEnv
-from stable_baselines3.her import HerReplayBuffer
 import tyro
 
 
@@ -30,12 +32,9 @@ class BestSuccessRateCallback(BaseCallback):
             return True
 
         successes = []
-        # Run eval episodes across vectorized envs.
         n_envs = self.eval_env.num_envs
         obs = self.eval_env.reset()
         episode_counts = 0
-        # Track per-env episode completion.
-        episode_success = [False] * n_envs
         episode_done = [False] * n_envs
 
         while episode_counts < self.n_eval_episodes:
@@ -108,9 +107,7 @@ class VideoEvalCallback(BaseCallback):
 
         # Log summary to tensorboard.
         n_success = sum(1 for e in episodes if e.success)
-        n_drops = sum(1 for e in episodes if e.terminated_by == "drop")
         self.logger.record("video_eval/success_rate", n_success / len(episodes))
-        self.logger.record("video_eval/drop_rate", n_drops / len(episodes))
         self.logger.record("video_eval/mean_reward",
                            np.mean([e.total_reward for e in episodes]))
 
@@ -123,28 +120,28 @@ class Args:
     out_dir: pathlib.Path = pathlib.Path("data/jaka_zu5_sim/rl")
 
     # Training parameters.
-    total_timesteps: int = 1_000_000
-    n_envs: int = 32
-    eval_freq: int = 10_000
+    total_timesteps: int = 50_000
+    n_envs: int = 8
+    eval_freq: int = 5_000
     n_eval_episodes: int = 20
-    checkpoint_freq: int = 50_000
+    checkpoint_freq: int = 10_000
 
-    # SAC hyperparameters (tuned for HER, based on rl-baselines3-zoo FetchPickAndPlace).
-    learning_rate: float = 1e-3
-    buffer_size: int = 1_000_000
-    batch_size: int = 1024
-    tau: float = 0.05
-    gamma: float = 0.95
-    learning_starts: int = 5_000
+    # SAC hyperparameters.
+    learning_rate: float = 3e-4
+    buffer_size: int = 100_000
+    batch_size: int = 256
+    tau: float = 0.005
+    gamma: float = 0.99
+    learning_starts: int = 1_000
     train_freq: int = 1
-    gradient_steps: int = 4
+    gradient_steps: int = 1
 
     # Network architecture.
-    net_arch: int = 512
-    n_layers: int = 3
+    net_arch: int = 256
+    n_layers: int = 2
 
     # Video evaluation during training.
-    video_eval_freq: int = 50_000
+    video_eval_freq: int = 25_000
     video_eval_episodes: int = 50
     video_eval_videos: int = 5
 
@@ -192,13 +189,8 @@ def main(args: Args) -> None:
         model = SAC.load(args.resume, env=train_envs)
     else:
         model = SAC(
-            "MultiInputPolicy",
+            "MlpPolicy",
             train_envs,
-            replay_buffer_class=HerReplayBuffer,
-            replay_buffer_kwargs=dict(
-                n_sampled_goal=4,
-                goal_selection_strategy="future",
-            ),
             learning_rate=args.learning_rate,
             buffer_size=args.buffer_size,
             batch_size=args.batch_size,
@@ -207,7 +199,6 @@ def main(args: Args) -> None:
             learning_starts=args.learning_starts,
             train_freq=args.train_freq,
             gradient_steps=args.gradient_steps,
-            target_entropy=-2.0,
             policy_kwargs=dict(net_arch=net_arch),
             verbose=1,
             tensorboard_log=str(log_dir),
