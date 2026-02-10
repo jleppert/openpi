@@ -125,14 +125,23 @@ class JakaZu5PickCubeEnv(gymnasium.Env):
         self._data.qpos[cube_qpos_adr:cube_qpos_adr + 3] = [cube_x, cube_y, cube_z]
         self._data.qpos[cube_qpos_adr + 3:cube_qpos_adr + 7] = [1, 0, 0, 0]  # identity quat
 
-        # Set arm home pose: gripper near workspace, pointing down.
+        # Randomize arm starting position: pick a random XY in workspace, IK to reach it.
+        # First set a nominal home pose so IK has a reasonable starting config.
         j2_home, j3_home = -1.48, 1.8
         home = [0.0, j2_home, j3_home, 0.0, -(j2_home + j3_home), 0.0]
         for i, (jid, val) in enumerate(zip(self._arm_joint_ids, home)):
-            if i in _CONTROLLED_JOINTS:
-                val += self._rng.uniform(-0.05, 0.05)
             self._data.qpos[self._model.jnt_qposadr[jid]] = val
-            self._data.ctrl[self._arm_actuator_ids[i]] = self._data.qpos[self._model.jnt_qposadr[jid]]
+            self._data.ctrl[self._arm_actuator_ids[i]] = val
+        mujoco.mj_forward(self._model, self._data)
+
+        # Solve IK to a random workspace position.
+        start_x = self._rng.uniform(*_WS_X_RANGE)
+        start_y = self._rng.uniform(*_WS_Y_RANGE)
+        start_target = np.array([start_x, start_y, _APPROACH_Z])
+        joint_targets = self._solve_ik(start_target)
+        for i, (jid, val) in enumerate(zip(self._arm_joint_ids, joint_targets)):
+            self._data.qpos[self._model.jnt_qposadr[jid]] = val
+            self._data.ctrl[self._arm_actuator_ids[i]] = val
 
         # Start gripper open.
         self._data.qpos[self._model.jnt_qposadr[self._gripper_joint_id]] = _GRIPPER_MAX_OPEN
