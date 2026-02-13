@@ -148,17 +148,81 @@ This opens an interactive window where you can:
 This is useful for inspecting the robot model, verifying camera placements, and testing
 the scene layout before running the full policy pipeline.
 
+## Collecting Training Data
+
+The `collect_demos.py` script runs the trained RL policy in the MuJoCo simulation and
+records DROID-format demonstrations at 15 Hz for fine-tuning.
+
+### Quick test (3 episodes)
+
+```bash
+MUJOCO_GL=egl uv run python examples/jaka_zu5_sim/collect_demos.py \
+    --args.n-episodes 3
+```
+
+### Full dataset (500 episodes)
+
+```bash
+MUJOCO_GL=egl uv run python examples/jaka_zu5_sim/collect_demos.py
+```
+
+### Custom camera configuration
+
+Export the default camera config, edit it, then collect with your custom cameras:
+
+```bash
+# Export defaults to JSON
+MUJOCO_GL=egl uv run python examples/jaka_zu5_sim/collect_demos.py \
+    --args.save-camera-config cameras.json --args.n-episodes 0
+
+# Edit cameras.json to match your real camera setup, then collect
+MUJOCO_GL=egl uv run python examples/jaka_zu5_sim/collect_demos.py \
+    --args.camera-config cameras.json
+```
+
+### CLI options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--args.model-path` | `data/jaka_zu5_sim/rl_test4/best_success_model/best_success_model.zip` | Path to trained SAC model |
+| `--args.n-episodes` | `500` | Number of successful episodes to collect |
+| `--args.only-successful` | `True` | Only save episodes where the cube was lifted |
+| `--args.prompt` | `"pick up the red cube"` | Language instruction stored with each frame |
+| `--args.repo-id` | `levelhq/jaka_zu5_pick_cube` | LeRobot dataset repo ID |
+| `--args.camera-config` | `None` | Camera config JSON file (overrides defaults) |
+| `--args.save-camera-config` | `None` | Save resolved camera config to JSON |
+| `--args.algo` | `"sac"` | RL algorithm (`sac` or `ppo`) |
+| `--args.push-to-hub` | `False` | Push dataset to HuggingFace Hub |
+
+### Validating the dataset
+
+After collection, validate shapes, value ranges, and episode structure:
+
+```bash
+uv run python examples/jaka_zu5_sim/test_dataset.py
+```
+
+Save sample images for visual inspection:
+
+```bash
+uv run python examples/jaka_zu5_sim/test_dataset.py \
+    --args.save-samples data/jaka_zu5_sim/dataset_samples
+```
+
 ## File Reference
 
 ```
 examples/jaka_zu5_sim/
   assets/
-    jaka_zu5.xml      # MuJoCo MJCF model
-  env.py              # Environment (renders cameras, reads joints, applies actions)
-  main.py             # Entry point (wires Runtime, PolicyAgent, ActionChunkBroker)
-  saver.py            # Video recorder subscriber
-  requirements.txt    # Python dependencies
-  README.md           # This file
+    jaka_zu5.xml        # MuJoCo MJCF model
+  camera_config.py      # Camera configuration (save/load JSON, apply to MuJoCo model)
+  collect_demos.py      # Collect RL demonstrations as a LeRobot dataset
+  env.py                # Environment (renders cameras, reads joints, applies actions)
+  main.py               # Entry point (wires Runtime, PolicyAgent, ActionChunkBroker)
+  saver.py              # Video recorder subscriber
+  test_dataset.py       # Validate collected dataset (shapes, ranges, statistics)
+  requirements.txt      # Python dependencies
+  README.md             # This file
 ```
 
 ### `assets/jaka_zu5.xml` -- MuJoCo Model
