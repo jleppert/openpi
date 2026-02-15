@@ -626,6 +626,49 @@ _CONFIGS = [
             ),
         ),
     ),
+    #
+    # JAKA Zu5 pick-cube fine-tuning (LoRA, RTX 3090 24GB).
+    #
+    TrainConfig(
+        name="pi0_fast_jaka_zu5_pick_cube",
+        model=pi0_fast.Pi0FASTConfig(
+            action_dim=8, action_horizon=10, max_token_len=180, paligemma_variant="gemma_2b_lora"
+        ),
+        data=SimpleDataConfig(
+            repo_id="levelhq/jaka_zu5_pick_cube",
+            assets=AssetsConfig(
+                asset_id="levelhq/jaka_zu5_pick_cube",
+            ),
+            data_transforms=lambda model: _transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "observation/exterior_image_1_left": "exterior_image_1_left",
+                            "observation/wrist_image_left": "wrist_image_left",
+                            "observation/joint_position": "joint_position",
+                            "observation/gripper_position": "gripper_position",
+                            "actions": "actions",
+                            "prompt": "task",
+                        }
+                    ),
+                    droid_policy.DroidInputs(model_type=ModelType.PI0_FAST),
+                ],
+                outputs=[droid_policy.DroidOutputs()],
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            str(pathlib.Path.home() / ".cache/openpi/openpi-assets/checkpoints/pi0_fast_droid/params")
+        ),
+        freeze_filter=pi0_fast.Pi0FASTConfig(
+            action_dim=8, action_horizon=10, max_token_len=180, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+        batch_size=2,
+        num_train_steps=30_000,
+        save_interval=5000,
+        keep_period=5000,
+    ),
     TrainConfig(
         name="pi05_droid",
         model=pi0_config.Pi0Config(action_horizon=15, pi05=True),

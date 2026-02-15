@@ -96,7 +96,7 @@
                     </body>
 
                     <!-- Wrist Camera -->
-                    <camera name="wrist_cam" pos="0 0 -0.08" xyaxes="1 0 0 0 -1 0" fovy="60"/>
+                    <camera name="wrist_cam" pos="0 0 -0.08" xyaxes="1 0 0 0 1 0" fovy="60"/>
                   </body>
                 </body>
               </body>

@@ -18,7 +18,7 @@ Example JSON format (save with --args.save-camera-config cameras.json):
   "wrist": {
     "name": "wrist_cam",
     "pos": [0.0, 0.0, -0.08],
-    "xyaxes": [1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+    "xyaxes": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
     "fov": 60.0,
     "render_width": 640,
     "render_height": 480,
@@ -108,7 +108,7 @@ def default_wrist() -> CameraConfig:
     return CameraConfig(
         name="wrist_cam",
         pos=[0.0, 0.0, -0.08],
-        xyaxes=[1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+        xyaxes=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
         fov=60.0,
     )
 
