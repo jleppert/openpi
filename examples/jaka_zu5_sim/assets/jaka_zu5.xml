@@ -14,7 +14,7 @@
     <material name="grid_mat" texture="grid" texrepeat="8 8" reflectance="0.1"/>
     <material name="arm_mat" rgba="0.85 0.85 0.85 1"/>
     <material name="joint_mat" rgba="0.3 0.3 0.3 1"/>
-    <material name="gripper_mat" rgba="0.2 0.2 0.2 1"/>
+    <material name="gripper_mat" rgba="0.75 0.75 0.8 1" specular="0.4" shininess="0.3"/>
     <material name="table_mat" rgba="0.6 0.45 0.3 1"/>
     <material name="red_mat" rgba="0.9 0.15 0.15 1"/>
     <material name="green_mat" rgba="0.15 0.8 0.15 1"/>
@@ -96,7 +96,7 @@
                     </body>
 
                     <!-- Wrist Camera -->
-                    <camera name="wrist_cam" pos="0 0 -0.08" xyaxes="1 0 0 0 1 0" fovy="60"/>
+                    <camera name="wrist_cam" pos="0.1400 -0.0000 0.3200" xyaxes="1.0000 0.0000 0.0000 0.0000 1.0000 0.0000" fovy="41"/>
                   </body>
                 </body>
               </body>
@@ -107,7 +107,7 @@
     </body>
 
     <!-- External Camera (fixed, 45-degree overhead view of workspace) -->
-    <camera name="external_cam" pos="1.2 -0.8 1.2" xyaxes="0.6 0.8 0 -0.35 0.25 0.9" fovy="55"/>
+    <camera name="external_cam" pos="0.4852 0.9268 0.8646" xyaxes="-0.9999 -0.0111 0.0000 0.0042 -0.3784 0.9256" fovy="55"/>
   </worldbody>
 
   <!-- Gripper finger symmetry constraint -->

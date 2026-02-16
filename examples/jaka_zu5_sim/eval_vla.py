@@ -85,6 +85,8 @@ class Args:
     poll_interval: int = 60
     # Output directory for videos and action logs.
     output_dir: str = "eval_output"
+    # Disable wrist camera (send black image) to test if it hurts performance.
+    disable_wrist_cam: bool = False
 
 
 class SimEvaluator:
@@ -148,6 +150,10 @@ class SimEvaluator:
 
         ext_img = image_tools.convert_to_uint8(image_tools.resize_with_pad(ext_img, _IMAGE_SIZE, _IMAGE_SIZE))
         wrist_img = image_tools.convert_to_uint8(image_tools.resize_with_pad(wrist_img, _IMAGE_SIZE, _IMAGE_SIZE))
+
+        # EXPERIMENT: disable wrist camera to test if it hurts more than helps.
+        if getattr(self, "_disable_wrist_cam", False):
+            wrist_img = np.zeros_like(wrist_img)
 
         joint_pos = np.array([self._data.qpos[self._model.jnt_qposadr[jid]] for jid in self._jids])
         joint_pos_7 = np.concatenate([joint_pos, [0.0]])
@@ -451,6 +457,9 @@ def main(args: Args) -> None:
             wandb.init(project="openpi", name=f"eval-{checkpoint_dir.name}")
 
     sim = SimEvaluator(seed=args.seed)
+    sim._disable_wrist_cam = args.disable_wrist_cam
+    if args.disable_wrist_cam:
+        logging.info("Wrist camera DISABLED (sending black images)")
 
     if not args.watch:
         # Single evaluation: evaluate all checkpoints.
