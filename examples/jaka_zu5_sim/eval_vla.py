@@ -28,6 +28,7 @@ import re
 import sys
 import time
 
+import imageio
 import mujoco
 import mujoco.renderer
 import numpy as np
@@ -82,6 +83,8 @@ class Args:
     seed: int = 42
     # Polling interval in seconds for watch mode.
     poll_interval: int = 60
+    # Output directory for videos and action logs.
+    output_dir: str = "eval_output"
 
 
 class SimEvaluator:
@@ -164,11 +167,8 @@ class SimEvaluator:
             "actions": np.zeros(8, dtype=np.float32),
         }
 
-    def apply_action(self, action: dict):
-        """Apply policy output (matches env.py:apply_action)."""
-        raw = np.asarray(action["actions"])
-        # Policy returns action chunk (action_horizon, 8); take first action.
-        actions = raw[0] if raw.ndim == 2 else raw
+    def apply_single_action(self, actions: np.ndarray):
+        """Apply a single action vector (8,) to the sim."""
         joint_vel = actions[:6]
         gripper_cmd = actions[7]
 
@@ -194,6 +194,16 @@ class SimEvaluator:
     def gripper_cube_distance(self) -> float:
         """Euclidean distance between gripper and cube."""
         return float(np.linalg.norm(self._data.xpos[self._grip_bid] - self._data.xpos[self._cube_bid]))
+
+    def render_frame(self) -> np.ndarray:
+        """Render external camera at full 480x640 resolution for video recording."""
+        return self._render_camera(self._ext_cam_id).copy()
+
+    def get_joint_state(self) -> tuple[np.ndarray, float]:
+        """Return current (joint_positions (6,), normalized_gripper)."""
+        joint_pos = np.array([self._data.qpos[self._model.jnt_qposadr[jid]] for jid in self._jids])
+        gripper_raw = self._data.qpos[self._model.jnt_qposadr[self._grip_jid]]
+        return joint_pos, gripper_raw / _GRIPPER_MAX_OPEN
 
     def _render_camera(self, cam_id: int) -> np.ndarray:
         self._renderer.update_scene(self._data, camera=cam_id)
@@ -247,11 +257,25 @@ def evaluate_checkpoint(
     sim: SimEvaluator,
     n_episodes: int,
     max_steps: int,
+    output_dir: pathlib.Path | None = None,
+    ckpt_step: int | None = None,
+    use_wandb: bool = False,
 ) -> dict:
-    """Run n_episodes and return metrics."""
+    """Run n_episodes and return metrics.
+
+    If output_dir and ckpt_step are provided, saves per-episode:
+      - MP4 video from external camera
+      - NPZ with action_chunks, joint_positions, gripper_positions, success
+    """
     successes = 0
     episode_lengths = []
     final_dists = []
+
+    # Create output directory for this checkpoint.
+    save_dir = None
+    if output_dir is not None and ckpt_step is not None:
+        save_dir = output_dir / str(ckpt_step)
+        save_dir.mkdir(parents=True, exist_ok=True)
 
     # Warm up JIT with a dummy inference call.
     logging.info("Warming up policy (JIT compilation, may take a few minutes)...")
@@ -261,52 +285,110 @@ def evaluate_checkpoint(
     _ = policy.infer(obs)
     logging.info("JIT warmup done in %.1fs. Starting evaluation.", time.time() - t0)
 
+    first_video_path = None
+
     for ep in range(n_episodes):
         sim.reset()
         success = False
         ep_start = time.time()
+        step = 0
 
-        for step in range(max_steps):
-            t_obs = time.time()
+        # Per-episode recording buffers.
+        frames: list[np.ndarray] = []
+        action_chunks: list[np.ndarray] = []
+        joint_positions: list[np.ndarray] = []
+        gripper_positions: list[float] = []
+
+        # Record initial frame and state.
+        if save_dir is not None:
+            frames.append(sim.render_frame())
+            jp, gp = sim.get_joint_state()
+            joint_positions.append(jp)
+            gripper_positions.append(gp)
+
+        while step < max_steps:
             obs = sim.get_observation()
-            t_infer = time.time()
             action = policy.infer(obs)
-            t_act = time.time()
-            sim.apply_action(action)
-            t_done = time.time()
+
+            # Policy returns action chunk (action_horizon, action_dim).
+            raw = np.asarray(action["actions"])
+            chunk = raw if raw.ndim == 2 else raw[np.newaxis, :]
+
+            if save_dir is not None:
+                action_chunks.append(chunk.copy())
 
             # Prevent JAX/numpy memory accumulation.
             del obs, action
 
-            if sim.check_success():
-                success = True
-                episode_lengths.append(step + 1)
+            # Execute all actions in the chunk.
+            for a in chunk:
+                sim.apply_single_action(a)
+                step += 1
+
+                if save_dir is not None:
+                    frames.append(sim.render_frame())
+                    jp, gp = sim.get_joint_state()
+                    joint_positions.append(jp)
+                    gripper_positions.append(gp)
+
+                if sim.check_success():
+                    success = True
+                    break
+                if step >= max_steps:
+                    break
+
+            if success:
+                episode_lengths.append(step)
                 break
 
         if success:
             successes += 1
         final_dists.append(sim.gripper_cube_distance())
 
+        # Save episode data.
+        if save_dir is not None:
+            video_path = save_dir / f"episode_{ep}.mp4"
+            imageio.mimwrite(str(video_path), frames, fps=15, quality=8)
+            if first_video_path is None:
+                first_video_path = video_path
+
+            np.savez_compressed(
+                save_dir / f"episode_{ep}.npz",
+                action_chunks=np.array(action_chunks, dtype=object),
+                joint_positions=np.array(joint_positions),
+                gripper_positions=np.array(gripper_positions),
+                success=success,
+            )
+            logging.info("Saved %s (%d frames)", video_path, len(frames))
+
         # Clean up between episodes to prevent memory accumulation.
+        del frames, action_chunks, joint_positions, gripper_positions
         gc.collect()
 
         ep_time = time.time() - ep_start
-        steps_done = step + 1
         logging.info(
             "Episode %d/%d: %s in %d steps (%.1fs, %.0f Hz), dist=%.3f",
             ep + 1, n_episodes, "SUCCESS" if success else "fail",
-            steps_done, ep_time, steps_done / ep_time, final_dists[-1],
+            step, ep_time, step / ep_time, final_dists[-1],
         )
 
     success_rate = successes / n_episodes
     mean_ep_len = float(np.mean(episode_lengths)) if episode_lengths else float(max_steps)
     mean_dist = float(np.mean(final_dists))
 
-    return {
+    metrics = {
         "eval/success_rate": success_rate,
         "eval/mean_episode_length": mean_ep_len,
         "eval/mean_cube_dist": mean_dist,
     }
+
+    # Log first episode video to W&B.
+    if use_wandb and first_video_path is not None:
+        import wandb
+
+        metrics["eval/video"] = wandb.Video(str(first_video_path), fps=15, format="mp4")
+
+    return metrics
 
 
 def get_checkpoint_steps(checkpoint_dir: pathlib.Path) -> list[int]:
@@ -353,6 +435,7 @@ def main(args: Args) -> None:
     jax.config.update("jax_compilation_cache_dir", str(epath.Path("~/.cache/jax").expanduser()))
 
     checkpoint_dir = pathlib.Path(args.checkpoint_dir)
+    output_dir = pathlib.Path(args.output_dir)
 
     # W&B setup.
     if args.wandb:
@@ -375,18 +458,23 @@ def main(args: Args) -> None:
         if not steps:
             logging.error("No completed checkpoints found in %s", checkpoint_dir)
             return
+        steps = steps[::-1]  # Evaluate newest checkpoints first.
         logging.info("Found %d checkpoints: %s", len(steps), steps)
 
         for i, step in enumerate(steps):
             logging.info("Evaluating checkpoint %d/%d: step %d", i + 1, len(steps), step)
             policy = load_policy(args.config, checkpoint_dir, step)
-            metrics = evaluate_checkpoint(policy, sim, args.n_episodes, args.max_steps_per_episode)
+            metrics = evaluate_checkpoint(
+                policy, sim, args.n_episodes, args.max_steps_per_episode,
+                output_dir=output_dir, ckpt_step=step, use_wandb=args.wandb,
+            )
             del policy
             gc.collect()
 
             print(f"\n=== Step {step} ===")
             for k, v in metrics.items():
-                print(f"  {k}: {v:.4f}")
+                if isinstance(v, (int, float)):
+                    print(f"  {k}: {v:.4f}")
 
             if args.wandb:
                 import wandb
@@ -417,12 +505,16 @@ def main(args: Args) -> None:
                 current_policy = load_policy(args.config, checkpoint_dir, step)
                 current_step = step
 
-                metrics = evaluate_checkpoint(current_policy, sim, args.n_episodes, args.max_steps_per_episode)
+                metrics = evaluate_checkpoint(
+                    current_policy, sim, args.n_episodes, args.max_steps_per_episode,
+                    output_dir=output_dir, ckpt_step=step, use_wandb=args.wandb,
+                )
                 evaluated.add(step)
 
                 print(f"\n=== Step {step} ===")
                 for k, v in metrics.items():
-                    print(f"  {k}: {v:.4f}")
+                    if isinstance(v, (int, float)):
+                        print(f"  {k}: {v:.4f}")
 
                 if args.wandb:
                     import wandb
