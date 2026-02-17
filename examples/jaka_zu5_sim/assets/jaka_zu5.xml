@@ -3,6 +3,10 @@
 
   <option timestep="0.002" gravity="0 0 -9.81" integrator="implicitfast" noslip_iterations="3"/>
 
+  <visual>
+    <quality shadowsize="0"/>
+  </visual>
+
   <default>
     <joint damping="5" armature="0.1"/>
     <geom condim="4" friction="1 0.5 0.01"/>
@@ -96,7 +100,7 @@
                     </body>
 
                     <!-- Wrist Camera -->
-                    <camera name="wrist_cam" pos="0.1400 -0.0000 0.3200" xyaxes="1.0000 0.0000 0.0000 0.0000 1.0000 0.0000" fovy="41"/>
+                    <camera name="wrist_cam" pos="0.4920 0.0127 0.2826" xyaxes="0.0052 1.0000 0.0001 -0.7062 0.0036 0.7080" fovy="41"/>
                   </body>
                 </body>
               </body>

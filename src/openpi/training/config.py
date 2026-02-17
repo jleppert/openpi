@@ -19,6 +19,7 @@ import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
+import openpi.policies.jaka_policy as jaka_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
@@ -65,6 +66,8 @@ class AssetsConfig:
 class DataConfig:
     # LeRobot repo id. If None, fake data will be created.
     repo_id: str | None = None
+    # Root directory for the LeRobot dataset. If None, uses the default lerobot cache.
+    root: str | None = None
     # Directory within the assets directory containing the data assets.
     asset_id: str | None = None
     # Contains precomputed normalization stats. If None, normalization will not be performed.
@@ -509,6 +512,9 @@ class TrainConfig:
     num_workers: int = 2
     # Number of train steps (batches) to run.
     num_train_steps: int = 30_000
+    # If set, overrides num_train_steps by computing it from the dataset size.
+    # Supports fractional epochs (e.g. 1.5).
+    num_epochs: float | None = None
 
     # How often (in steps) to log training metrics.
     log_interval: int = 100
@@ -632,12 +638,12 @@ _CONFIGS = [
     TrainConfig(
         name="pi0_fast_jaka_zu5_pick_cube",
         model=pi0_fast.Pi0FASTConfig(
-            action_dim=8, action_horizon=10, max_token_len=180, paligemma_variant="gemma_2b_lora"
+            action_dim=4, action_horizon=10, max_token_len=180, paligemma_variant="gemma_2b_lora"
         ),
         data=SimpleDataConfig(
-            repo_id="levelhq/jaka_zu5_pick_cube",
+            repo_id="jaka_zu5_pick_cube_v4",
             assets=AssetsConfig(
-                asset_id="levelhq/jaka_zu5_pick_cube",
+                asset_id="jaka_zu5_pick_cube_v4",
             ),
             data_transforms=lambda model: _transforms.Group(
                 inputs=[
@@ -651,21 +657,24 @@ _CONFIGS = [
                             "prompt": "task",
                         }
                     ),
-                    droid_policy.DroidInputs(model_type=ModelType.PI0_FAST),
+                    jaka_policy.JakaInputs(),
                 ],
-                outputs=[droid_policy.DroidOutputs()],
+                outputs=[jaka_policy.JakaOutputs()],
             ),
-            base_config=DataConfig(prompt_from_task=True),
+            base_config=DataConfig(
+                prompt_from_task=True,
+                root="data/jaka_zu5_sim/datasets/jaka_zu5_pick_cube_v4",
+            ),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader(
             str(pathlib.Path.home() / ".cache/openpi/openpi-assets/checkpoints/pi0_fast_droid/params")
         ),
         freeze_filter=pi0_fast.Pi0FASTConfig(
-            action_dim=8, action_horizon=10, max_token_len=180, paligemma_variant="gemma_2b_lora"
+            action_dim=4, action_horizon=10, max_token_len=180, paligemma_variant="gemma_2b_lora"
         ).get_freeze_filter(),
         ema_decay=None,
         batch_size=2,
-        num_train_steps=30_000,
+        num_epochs=5,
         save_interval=5000,
         keep_period=5000,
     ),
@@ -677,9 +686,9 @@ _CONFIGS = [
             action_expert_variant="gemma_300m_lora",
         ),
         data=SimpleDataConfig(
-            repo_id="levelhq/jaka_zu5_pick_cube",
+            repo_id="jaka_zu5_pick_cube_v4",
             assets=AssetsConfig(
-                asset_id="levelhq/jaka_zu5_pick_cube",
+                asset_id="jaka_zu5_pick_cube_v4",
             ),
             data_transforms=lambda model: _transforms.Group(
                 inputs=[
@@ -693,11 +702,14 @@ _CONFIGS = [
                             "prompt": "task",
                         }
                     ),
-                    droid_policy.DroidInputs(model_type=ModelType.PI0),
+                    jaka_policy.JakaInputs(),
                 ],
-                outputs=[droid_policy.DroidOutputs()],
+                outputs=[jaka_policy.JakaOutputs()],
             ),
-            base_config=DataConfig(prompt_from_task=True),
+            base_config=DataConfig(
+                prompt_from_task=True,
+                root="data/jaka_zu5_sim/datasets/jaka_zu5_pick_cube_v4",
+            ),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader(
             str(pathlib.Path.home() / ".cache/openpi/openpi-assets/checkpoints/pi0_base/params")
@@ -709,7 +721,7 @@ _CONFIGS = [
         ).get_freeze_filter(),
         ema_decay=None,
         batch_size=2,
-        num_train_steps=30_000,
+        num_epochs=5,
         save_interval=5000,
         keep_period=5000,
     ),

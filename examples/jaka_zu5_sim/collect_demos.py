@@ -20,6 +20,10 @@ Usage:
     MUJOCO_GL=egl uv run python examples/jaka_zu5_sim/collect_demos.py \
         --args.save-camera-config cameras.json --args.n-episodes 0
 
+    # Custom output directory
+    MUJOCO_GL=egl uv run python examples/jaka_zu5_sim/collect_demos.py \
+        --args.output-dir /path/to/output
+
     # Custom model path
     MUJOCO_GL=egl uv run python examples/jaka_zu5_sim/collect_demos.py \
         --args.model-path data/jaka_zu5_sim/rl_test4/final_model.zip
@@ -109,6 +113,9 @@ class Args:
 
     # RL algorithm: "sac" or "ppo".
     algo: str = "sac"
+
+    # Output directory for the dataset (default: HF_LEROBOT_HOME / repo_id).
+    output_dir: str | None = None
 
     # Push dataset to HuggingFace Hub.
     push_to_hub: bool = False
@@ -325,16 +332,16 @@ class DemoCollector:
     def _droid_action(
         self, current: np.ndarray, target: np.ndarray, gripper_open: bool
     ) -> np.ndarray:
-        """Compute 8D DROID action from joint position delta.
+        """Compute 4D action [J1_vel, J2_vel, J3_vel, gripper] from joint position delta.
 
-        The velocity is computed so that env.py's apply_action reproduces
-        the same actuator targets: target = current + vel * dt.
+        Only the 3 active joints (J1-J3) are included; J4/J5/J6 are derived
+        analytically at eval time. The velocity is computed so that
+        target = current + vel * dt.
         """
         vel = (target - current) / self._dt
-        a = np.zeros(8, dtype=np.float32)
-        a[:6] = vel.astype(np.float32)
-        # a[6] = 0.0  (padded 7th DOF for Franka compatibility)
-        a[7] = 1.0 if gripper_open else 0.0
+        a = np.zeros(4, dtype=np.float32)
+        a[:3] = vel[:3].astype(np.float32)
+        a[3] = 1.0 if gripper_open else 0.0
         return a
 
     # ---- Observation recording ---------------------------------------------
@@ -359,9 +366,9 @@ class DemoCollector:
             )
         )
 
-        # Joint positions (6D padded to 7D for DROID/Franka format).
+        # Joint positions (3D: J1, J2, J3 — the active joints).
         j6 = self._read_joints().astype(np.float32)
-        j7 = np.append(j6, 0.0).astype(np.float32)
+        j3 = j6[:3]
 
         # Gripper position normalized to [0, 1].
         g = self._data.qpos[self._model.jnt_qposadr[self._grip_jid]]
@@ -370,7 +377,7 @@ class DemoCollector:
         return {
             "exterior_image_1_left": ext,
             "wrist_image_left": wrist,
-            "joint_position": j7,
+            "joint_position": j3,
             "gripper_position": gp,
             "actions": action,
             "task": prompt,
@@ -489,12 +496,16 @@ def main(args: Args) -> None:
     collector = DemoCollector(ext_cam, wrist_cam)
 
     # Create LeRobot dataset (wipes any existing dataset with same repo_id).
-    output_path = HF_LEROBOT_HOME / args.repo_id
+    if args.output_dir:
+        output_path = pathlib.Path(args.output_dir)
+    else:
+        output_path = HF_LEROBOT_HOME / args.repo_id
     if output_path.exists():
         shutil.rmtree(output_path)
 
     dataset = LeRobotDataset.create(
         repo_id=args.repo_id,
+        root=output_path,
         robot_type="jaka_zu5",
         fps=15,
         features={
@@ -510,7 +521,7 @@ def main(args: Args) -> None:
             },
             "joint_position": {
                 "dtype": "float32",
-                "shape": (7,),
+                "shape": (3,),
                 "names": ["joint_position"],
             },
             "gripper_position": {
@@ -520,7 +531,7 @@ def main(args: Args) -> None:
             },
             "actions": {
                 "dtype": "float32",
-                "shape": (8,),
+                "shape": (4,),
                 "names": ["actions"],
             },
         },

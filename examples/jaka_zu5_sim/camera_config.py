@@ -8,8 +8,8 @@ Example JSON format (save with --args.save-camera-config cameras.json):
 {
   "external": {
     "name": "external_cam",
-    "pos": [1.2, -0.8, 1.2],
-    "xyaxes": [0.6, 0.8, 0.0, -0.35, 0.25, 0.9],
+    "pos": [0.4852, 0.9268, 0.8646],
+    "xyaxes": [-0.9999, -0.0111, 0.0, 0.0042, -0.3784, 0.9256],
     "fov": 55.0,
     "render_width": 640,
     "render_height": 480,
@@ -17,9 +17,9 @@ Example JSON format (save with --args.save-camera-config cameras.json):
   },
   "wrist": {
     "name": "wrist_cam",
-    "pos": [0.0, 0.0, -0.08],
-    "xyaxes": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-    "fov": 60.0,
+    "pos": [0.4920, 0.0127, 0.2826],
+    "xyaxes": [0.0052, 1.0000, 0.0001, -0.7062, 0.0036, 0.7080],
+    "fov": 41.0,
     "render_width": 640,
     "render_height": 480,
     "output_size": 224
@@ -97,8 +97,8 @@ def default_external() -> CameraConfig:
     """External camera defaults (matches jaka_zu5.xml)."""
     return CameraConfig(
         name="external_cam",
-        pos=[1.2, -0.8, 1.2],
-        xyaxes=[0.6, 0.8, 0.0, -0.35, 0.25, 0.9],
+        pos=[0.4852, 0.9268, 0.8646],
+        xyaxes=[-0.9999, -0.0111, 0.0, 0.0042, -0.3784, 0.9256],
         fov=55.0,
     )
 
@@ -107,9 +107,9 @@ def default_wrist() -> CameraConfig:
     """Wrist camera defaults (matches jaka_zu5.xml). Pos relative to gripper_base."""
     return CameraConfig(
         name="wrist_cam",
-        pos=[0.0, 0.0, -0.08],
-        xyaxes=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-        fov=60.0,
+        pos=[0.4920, 0.0127, 0.2826],
+        xyaxes=[0.0052, 1.0000, 0.0001, -0.7062, 0.0036, 0.7080],
+        fov=41.0,
     )
 
 

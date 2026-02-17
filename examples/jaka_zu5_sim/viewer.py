@@ -316,6 +316,7 @@ class _PreviewWindow:
             self._apply_orbit_to_model(data)
 
         renderer.update_scene(data, camera=self._fixed_cam)
+        renderer.scene.flags[mujoco.mjtRndFlag.mjRND_SHADOW] = 0
         rgb = renderer.render()
 
         glfw.make_context_current(self.win)

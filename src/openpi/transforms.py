@@ -142,7 +142,13 @@ class Normalize(DataTransformFn):
         assert stats.q01 is not None
         assert stats.q99 is not None
         q01, q99 = stats.q01[..., : x.shape[-1]], stats.q99[..., : x.shape[-1]]
-        return (x - q01) / (q99 - q01 + 1e-6) * 2.0 - 1.0
+        range_ = q99 - q01
+        # For zero/near-zero variance dims (e.g. padding or locked joints), avoid amplifying
+        # floating-point noise. Without this, dims where q01 ≈ q99 produce values ~1e6 that
+        # corrupt FAST token sequences (all dims are tokenized jointly).
+        zero_var = range_ < 1e-4
+        result = (x - q01) / np.where(zero_var, 1.0, range_ + 1e-6) * 2.0 - 1.0
+        return np.where(zero_var, 0.0, result)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -176,9 +182,18 @@ class Unnormalize(DataTransformFn):
         assert stats.q01 is not None
         assert stats.q99 is not None
         q01, q99 = stats.q01, stats.q99
+        range_ = q99 - q01
+        # Match the zero-variance handling in _normalize_quantile: for dims where
+        # q01 ≈ q99, output the constant value instead of amplifying noise.
+        zero_var = range_ < 1e-4
+        safe_range = np.where(zero_var, 1.0, range_ + 1e-6)
+        mid = (q01 + q99) / 2.0
         if (dim := q01.shape[-1]) < x.shape[-1]:
-            return np.concatenate([(x[..., :dim] + 1.0) / 2.0 * (q99 - q01 + 1e-6) + q01, x[..., dim:]], axis=-1)
-        return (x + 1.0) / 2.0 * (q99 - q01 + 1e-6) + q01
+            result = (x[..., :dim] + 1.0) / 2.0 * safe_range + q01
+            result = np.where(zero_var, mid, result)
+            return np.concatenate([result, x[..., dim:]], axis=-1)
+        result = (x + 1.0) / 2.0 * safe_range + q01
+        return np.where(zero_var, mid, result)
 
 
 @dataclasses.dataclass(frozen=True)

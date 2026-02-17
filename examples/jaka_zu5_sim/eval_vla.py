@@ -156,7 +156,7 @@ class SimEvaluator:
             wrist_img = np.zeros_like(wrist_img)
 
         joint_pos = np.array([self._data.qpos[self._model.jnt_qposadr[jid]] for jid in self._jids])
-        joint_pos_7 = np.concatenate([joint_pos, [0.0]])
+        joint_pos_3 = joint_pos[:3]  # Only active joints: J1, J2, J3
 
         gripper_raw = self._data.qpos[self._model.jnt_qposadr[self._grip_jid]]
         gripper_pos = np.array([gripper_raw / _GRIPPER_MAX_OPEN])
@@ -166,17 +166,24 @@ class SimEvaluator:
         return {
             "exterior_image_1_left": ext_img,
             "wrist_image_left": wrist_img,
-            "joint_position": joint_pos_7.astype(np.float32),
+            "joint_position": joint_pos_3.astype(np.float32),
             "gripper_position": gripper_pos.astype(np.float32),
             "task": "pick up the red cube",
             # Dummy actions — required by RepackTransform but unused during inference.
-            "actions": np.zeros(8, dtype=np.float32),
+            "actions": np.zeros(4, dtype=np.float32),
         }
 
     def apply_single_action(self, actions: np.ndarray):
-        """Apply a single action vector (8,) to the sim."""
-        joint_vel = actions[:6]
-        gripper_cmd = actions[7]
+        """Apply a single action vector (4,) to the sim.
+
+        Actions are [J1_vel, J2_vel, J3_vel, gripper]. J4 and J6 are set to 0.
+        J5 is computed analytically as -(J2+J3) to keep the gripper pointing down.
+        """
+        j1_vel, j2_vel, j3_vel = actions[0], actions[1], actions[2]
+        gripper_cmd = actions[3]
+
+        # Expand to 6-DOF: [J1, J2, J3, 0 (J4), J5_comp, 0 (J6)]
+        joint_vel = np.array([j1_vel, j2_vel, j3_vel, 0.0, -(j2_vel + j3_vel), 0.0])
 
         dt = self._model.opt.timestep * _PHYSICS_STEPS
         current_pos = np.array([self._data.qpos[self._model.jnt_qposadr[jid]] for jid in self._jids])

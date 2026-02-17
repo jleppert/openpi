@@ -222,6 +222,36 @@ def main(config: _config.TrainConfig):
         sharding=data_sharding,
         shuffle=True,
     )
+
+    if config.num_epochs is not None:
+        data_config = config.data.create(config.assets_dirs, config.model)
+        dataset = _data_loader.create_torch_dataset(data_config, config.model.action_horizon, config.model)
+        dataset_size = len(dataset)
+        computed_steps = int(config.num_epochs * dataset_size / config.batch_size)
+        logging.info(
+            f"num_epochs={config.num_epochs}, dataset_size={dataset_size}, batch_size={config.batch_size} "
+            f"=> num_train_steps={computed_steps}"
+        )
+        config = dataclasses.replace(config, num_train_steps=computed_steps)
+        # Sync LR schedule decay_steps with computed total steps.
+        if isinstance(config.lr_schedule, _optimizer.CosineDecaySchedule):
+            config = dataclasses.replace(
+                config,
+                lr_schedule=dataclasses.replace(config.lr_schedule, decay_steps=computed_steps),
+            )
+            logging.info(f"Updated lr_schedule.decay_steps={computed_steps}")
+
+    if isinstance(config.lr_schedule, _optimizer.CosineDecaySchedule):
+        logging.info(
+            f"LR schedule: {type(config.lr_schedule).__name__} — "
+            f"warmup_steps={config.lr_schedule.warmup_steps}, "
+            f"peak_lr={config.lr_schedule.peak_lr}, "
+            f"decay_steps={config.lr_schedule.decay_steps}, "
+            f"decay_lr={config.lr_schedule.decay_lr}"
+        )
+    else:
+        logging.info(f"LR schedule: {config.lr_schedule}")
+
     data_iter = iter(data_loader)
     batch = next(data_iter)
     logging.info(f"Initialized data loader:\n{training_utils.array_tree_to_info(batch)}")
